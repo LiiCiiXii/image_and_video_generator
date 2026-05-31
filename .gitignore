@@ -1,0 +1,17 @@
+# Do not upload local AI model downloads or large model weight files.
+models/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.onnx
+*.gguf
+*.h5
+*.pb
+*.msgpack
+
+# Do not upload the local Python virtual environment.
+.venv/
+venv/
+env/

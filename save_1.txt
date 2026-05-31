@@ -1,0 +1,1979 @@
+import os
+import json
+import random
+import re
+import time
+import traceback
+from pathlib import Path
+
+ALLOW_MODEL_DOWNLOAD = os.getenv("ALLOW_MODEL_DOWNLOAD", "0") == "1"
+if not ALLOW_MODEL_DOWNLOAD:
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = os.getenv("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.95")
+os.environ["PYTORCH_MPS_LOW_WATERMARK_RATIO"] = os.getenv("PYTORCH_MPS_LOW_WATERMARK_RATIO", "0.0")
+
+import gradio as gr
+import imageio
+import torch
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont, ImageOps
+from diffusers import LTXPipeline
+from diffusers.utils import export_to_video
+
+
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_DIR = BASE_DIR / "models"
+OUTPUT_DIR = BASE_DIR / "videos"
+DATA_FILE = BASE_DIR / "girlfriends.json"
+GENERATED_DIR = BASE_DIR / "generated_images"
+IMAGE_MODEL_ID = os.getenv("IMAGE_MODEL_ID", "Lykon/dreamshaper-8")
+IMAGE_WIDTH = int(os.getenv("IMAGE_WIDTH", "512"))
+IMAGE_HEIGHT = int(os.getenv("IMAGE_HEIGHT", "768"))
+IMAGE_STEPS = int(os.getenv("IMAGE_STEPS", "22"))
+IMAGE_GUIDANCE = float(os.getenv("IMAGE_GUIDANCE", "7.5"))
+LTX_IMAGE_WIDTH = int(os.getenv("LTX_IMAGE_WIDTH", "384"))
+LTX_IMAGE_HEIGHT = int(os.getenv("LTX_IMAGE_HEIGHT", "512"))
+LTX_IMAGE_FRAMES = int(os.getenv("LTX_IMAGE_FRAMES", "9"))
+LTX_IMAGE_STEPS = int(os.getenv("LTX_IMAGE_STEPS", "8"))
+LTX_IMAGE_GUIDANCE = float(os.getenv("LTX_IMAGE_GUIDANCE", "3.0"))
+VIDEO_FPS = 24
+FRAME_MULTIPLE = 8
+MAX_FRAMES_PER_CLIP = 161
+FASTEST_FRAMES_PER_CLIP = 49
+BALANCED_FRAMES_PER_CLIP = 81
+MAX_DURATION_SECONDS = 180
+MAX_SINGLE_PASS_SECONDS = 3
+PERFORMANCE_PROFILE = os.getenv("PERFORMANCE_PROFILE", "m2max").lower()
+LOW_MEMORY_MODE = os.getenv("LOW_MEMORY_MODE", "0") == "1"
+IMAGE_MPS_DTYPE = os.getenv("IMAGE_MPS_DTYPE", "float16").lower()
+
+torch.set_grad_enabled(False)
+if hasattr(torch, "set_float32_matmul_precision"):
+    torch.set_float32_matmul_precision("high")
+if os.cpu_count():
+    torch.set_num_threads(os.cpu_count())
+
+pipe = None
+image_pipe = None
+image_pipe_dtype = None
+
+
+def get_server_port():
+    configured_port = os.environ.get("GRADIO_SERVER_PORT")
+    if configured_port:
+        return int(configured_port)
+    return None
+
+
+DEFAULT_IMAGE_PROMPT = (
+    "masterpiece anime character art, full body head-to-toe, feet visible, clean line art"
+)
+REALISTIC_IMAGE_PROMPT = (
+    "RAW DSLR photo of a real adult person age 19 or older, photorealistic, natural skin texture"
+)
+NEGATIVE_IMAGE_PROMPT = (
+    "child, teen, underage, loli, nude, explicit, bad anatomy, deformed face, "
+    "extra limbs, missing limbs, fused fingers, blurry, low quality, noisy, watermark, text, "
+    "close-up, cropped body, cropped head, headshot, bust shot, cut off legs, cut off feet, "
+    "wrong outfit, armor, metal armor, gold armor, cape, helmet"
+)
+VIDEO_NEGATIVE_PROMPT = (
+    "blurry, flicker, jitter, shaky camera, warped face, bad anatomy, extra limbs, "
+    "duplicate person, inconsistent character, text, watermark, close-up, cropped, "
+    "out of frame, cutaway shot, anime, cartoon, cgi, plastic skin, doll face"
+)
+
+ETHNICITY_OPTIONS = [
+    "Khmer Cambodian woman",
+    "Japanese woman",
+    "Korean woman",
+    "Chinese woman",
+    "white Caucasian woman",
+    "Russian woman",
+]
+
+APPEARANCE_OPTIONS = [
+    "long black hair and amber eyes",
+    "wavy brunette hair and soft brown eyes",
+    "silver hair and violet eyes",
+    "pink hair and blue eyes",
+    "blonde twin tails and green eyes",
+    "short dark bob haircut and smoky eyes",
+    "long red hair and gold eyes",
+    "tan skin with long chocolate hair",
+]
+
+OUTFIT_OPTIONS = [
+    "tiny black bikini with gold jewelry",
+    "red string bikini with thigh straps",
+    "white lace swimsuit with cutouts and frills",
+    "off-shoulder crop top and micro skirt",
+    "sheer beach cover-up over a bikini",
+    "glossy fitted bodysuit",
+    "low-cut cocktail dress with high slit",
+    "bunny-girl inspired leotard with fishnet stockings",
+]
+
+BACKGROUND_OPTIONS = [
+    "bright kitchen",
+    "cozy bedroom with soft romantic lighting",
+    "sunny cafe",
+    "tropical beach with palm trees",
+    "neon city rooftop at night",
+    "flower garden with glowing evening light",
+    "angkor wat temple background with sunrise lighting",
+]
+
+POSE_OPTIONS = [
+    "seductive confident pose, hand in hair",
+    "playful wink, leaning toward camera",
+    "glamorous model pose, arched back",
+    "sitting pose with crossed legs",
+    "over-the-shoulder look, teasing smile",
+    "standing full body pose, one hand on hip",
+    "cute flirty smile, dynamic hair movement",
+]
+
+STYLE_OPTIONS = [
+    "high detail anime illustration",
+    "beautiful visual novel key art",
+    "ultra high quality waifu style",
+    "4k anime portrait",
+    "glossy anime pin-up style",
+    "soft painterly anime rendering",
+    "vibrant waifu art, clean linework",
+]
+
+REALISTIC_ETHNICITY_OPTIONS = [
+    "Khmer Cambodian woman",
+    "Japanese woman",
+    "Korean woman",
+    "Chinese woman",
+    "white Caucasian woman",
+    "Russian woman",
+]
+
+MALE_ETHNICITY_OPTIONS = [
+    "Khmer Cambodian man",
+    "Japanese man",
+    "Korean man",
+    "Chinese man",
+    "white Caucasian man",
+    "Russian man",
+]
+
+REALISTIC_APPEARANCE_OPTIONS = [
+    "long natural black hair, warm brown eyes, cute baby face",
+    "soft wavy brunette hair, brown eyes, sweet youthful face",
+    "straight dark bob haircut, gentle eyes, cute small smile",
+    "long auburn hair, hazel eyes, soft round cheeks",
+    "natural blonde hair, blue eyes, sweet cute smile",
+    "long dark brown hair, amber eyes, fresh youthful face",
+]
+
+REALISTIC_OUTFIT_OPTIONS = [
+    "cute white summer dress",
+    "pastel cardigan, simple top, and pleated skirt",
+    "casual blouse and denim skirt",
+    "soft pink sweater and fitted jeans",
+    "simple floral sundress",
+    "oversized hoodie and short skirt, casual cute style",
+]
+
+MALE_APPEARANCE_OPTIONS = [
+    "short black hair and amber eyes",
+    "messy brunette hair and brown eyes",
+    "silver hair and blue eyes",
+    "short red hair and gold eyes",
+]
+
+MALE_OUTFIT_OPTIONS = [
+    "stylish black jacket and fitted pants",
+    "white shirt and casual jeans",
+    "modern streetwear outfit",
+    "simple fitted suit",
+]
+
+REALISTIC_MALE_APPEARANCE_OPTIONS = [
+    "short natural black hair, warm brown eyes, cute youthful face",
+    "soft brunette hair, brown eyes, gentle smile",
+    "straight dark hair, natural face, cute small smile",
+    "short dark brown hair, amber eyes, fresh youthful face",
+]
+
+REALISTIC_MALE_OUTFIT_OPTIONS = [
+    "casual white shirt and jeans",
+    "soft sweater and fitted pants",
+    "clean black jacket and simple pants",
+    "casual hoodie and jeans",
+]
+
+REALISTIC_MALE_ETHNICITY_OPTIONS = [
+    "Khmer Cambodian man",
+    "Japanese man",
+    "Korean man",
+    "Chinese man",
+    "white Caucasian man",
+    "Russian man",
+]
+
+COUPLE_OUTFIT_OPTIONS = [
+    "matching casual outfits",
+    "coordinated date outfits",
+    "simple stylish everyday outfits",
+]
+
+REALISTIC_BACKGROUND_OPTIONS = [
+    "sunlit city street",
+    "cozy modern cafe interior",
+    "bright bedroom with soft daylight",
+    "tropical beach at golden hour",
+    "cute shopping street in soft daylight",
+    "flower garden in soft evening light",
+]
+
+REALISTIC_POSE_OPTIONS = [
+    "standing relaxed with a shy cute smile",
+    "walking naturally toward the camera",
+    "soft smile looking at the camera",
+    "standing full body casual pose",
+    "gentle peace sign pose, cute expression",
+    "casual candid pose with natural sweet expression",
+]
+
+REALISTIC_STYLE_OPTIONS = [
+    "RAW photo, 50mm lens, f/2.8, natural daylight",
+    "professional DSLR photo, realistic color grading",
+    "candid lifestyle photography, natural skin pores",
+    "documentary street photo, realistic lighting",
+    "full body fashion photo, sharp focus",
+    "phone camera photo, realistic imperfect skin",
+]
+
+PEOPLE_COUNT_OPTIONS = ["1 person", "2 people", "Random"]
+SINGLE_GENDER_OPTIONS = ["Only girl", "Only woman", "Only boy", "Only man"]
+GROUP_GENDER_OPTIONS = ["Only girl", "Only woman", "Only boy", "Only man", "Girl and boy", "Woman and man", "Random"]
+GENDER_MIX_OPTIONS = GROUP_GENDER_OPTIONS
+ACTION_OPTIONS = ["Walking", "Running", "Sitting", "Standing", "Hugging", "Kissing", "Random"]
+
+if DATA_FILE.exists():
+    with DATA_FILE.open("r", encoding="utf-8") as file:
+        CHARACTERS = json.load(file)
+else:
+    CHARACTERS = {
+        "Luna": {
+            "name": "Luna",
+            "avatar": "luna.png",
+            "bio": "Sweet, flirty, and teasing 18-year-old AI girlfriend",
+            "age": 18,
+            "personality": "Playful, Affectionate, Teasing",
+            "language": "English",
+        }
+    }
+
+
+def save_characters():
+    with DATA_FILE.open("w", encoding="utf-8") as file:
+        json.dump(CHARACTERS, file, indent=2)
+
+
+def get_image_characters():
+    return list(CHARACTERS.keys())
+
+
+def get_default_image_character():
+    if "Luna" in CHARACTERS:
+        return "Luna"
+    return next(iter(CHARACTERS), None)
+
+
+def get_avatar_path(character):
+    avatar = CHARACTERS[character].get("avatar", "")
+    avatar_path = Path(avatar)
+    if avatar and avatar_path.exists():
+        return str(avatar_path.resolve())
+    local_avatar_path = BASE_DIR / avatar
+    if avatar and local_avatar_path.exists():
+        return str(local_avatar_path.resolve())
+    return None
+
+
+def load_font(size, bold=False):
+    font_names = ["arialbd.ttf" if bold else "arial.ttf", "segoeuib.ttf" if bold else "segoeui.ttf"]
+    for font_name in font_names:
+        try:
+            return ImageFont.truetype(font_name, size)
+        except OSError:
+            pass
+    return ImageFont.load_default()
+
+
+def options_to_text(options):
+    return "\n".join(options)
+
+
+def parse_options_text(value, fallback):
+    options = [line.strip() for line in (value or "").splitlines() if line.strip()]
+    return options or list(fallback)
+
+
+def resolve_radio_choice(value, options, rng):
+    if value == "Random" or value not in options:
+        choices = [option for option in options if option != "Random"]
+        return rng.choice(choices)
+    return value
+
+
+def gender_choices_for_people(people_count):
+    if people_count == "1 person":
+        return SINGLE_GENDER_OPTIONS
+    return GROUP_GENDER_OPTIONS
+
+
+def normalize_gender_for_people(people_count, gender_mix):
+    choices = gender_choices_for_people(people_count)
+    if gender_mix in choices:
+        return gender_mix
+    return choices[0]
+
+
+def gender_field_visibility(people_count, gender_mix):
+    gender_mix = normalize_gender_for_people(people_count, gender_mix)
+    show_female = True
+    show_male = True
+    if people_count == "1 person":
+        show_female = gender_mix in ("Only girl", "Only woman")
+        show_male = gender_mix in ("Only boy", "Only man")
+    elif gender_mix in ("Only girl", "Only woman"):
+        show_male = False
+    elif gender_mix in ("Only boy", "Only man"):
+        show_female = False
+    return show_female, show_male
+
+
+def update_gender_choices(people_count, gender_mix):
+    gender_mix = normalize_gender_for_people(people_count, gender_mix)
+    choices = gender_choices_for_people(people_count)
+    show_female, show_male = gender_field_visibility(people_count, gender_mix)
+    return (
+        gr.update(choices=choices, value=gender_mix),
+        gr.update(visible=show_female),
+        gr.update(visible=show_female),
+        gr.update(visible=show_female),
+        gr.update(visible=show_male),
+        gr.update(visible=show_male),
+        gr.update(visible=show_male),
+    )
+
+
+def update_prompt_option_visibility(people_count, gender_mix):
+    show_female, show_male = gender_field_visibility(people_count, gender_mix)
+    return (
+        gr.update(visible=show_female),
+        gr.update(visible=show_female),
+        gr.update(visible=show_female),
+        gr.update(visible=show_male),
+        gr.update(visible=show_male),
+        gr.update(visible=show_male),
+    )
+
+
+def action_prompt(action, people_count):
+    action_text = (action or "").strip()
+    if not action_text:
+        return ""
+    action_key = action_text.lower()
+    if action_key == "random":
+        action_key = random.choice([option.lower() for option in ACTION_OPTIONS if option != "Random"])
+
+    if people_count == "2 people":
+        if action_key == "walking":
+            return "walking side by side"
+        if action_key == "running":
+            return "running side by side"
+        if action_key == "sitting":
+            return "sitting together"
+        if action_key == "hugging":
+            return "hugging each other"
+        if action_key == "kissing":
+            return "sweet romantic kiss, non-explicit"
+        if action_key == "standing":
+            return "standing side by side"
+        return action_text
+
+    if action_key == "walking":
+        return "walking naturally toward the camera"
+    if action_key == "running":
+        return "running with dynamic movement"
+    if action_key == "sitting":
+        return "sitting pose, full body visible"
+    if action_key == "hugging":
+        return "standing with arms softly folded"
+    if action_key == "kissing":
+        return "blowing a cute kiss toward the camera"
+    if action_key == "standing":
+        return "standing full body pose"
+    return action_text
+
+
+def subject_prompt(people_count, gender_mix, age):
+    adult_age = f"age {age} or older"
+    if people_count == "1 person":
+        if gender_mix in ("Only boy", "Only man"):
+            return f"one adult man {adult_age}"
+        return f"one adult woman {adult_age}"
+
+    if gender_mix in ("Only boy", "Only man"):
+        return f"two adult men {adult_age}"
+    if gender_mix in ("Girl and boy", "Woman and man"):
+        return f"one adult woman and one adult man {adult_age}"
+    return f"two adult women {adult_age}"
+
+
+def group_instruction(people_count, gender_mix):
+    if people_count != "2 people":
+        return "single main subject, no background people"
+    if gender_mix in ("Girl and boy", "Woman and man"):
+        return "two main subjects only, woman and man, both visible"
+    return "two main subjects only, both visible"
+
+
+def adapt_default_prompt(default_prompt, people_count, gender_mix, image_style):
+    prompt = (default_prompt or "").strip()
+    if people_count == "2 people":
+        if gender_mix in ("Girl and boy", "Woman and man"):
+            if image_style == "Realistic":
+                return "RAW DSLR photo of a real adult woman and adult man"
+            return "full body couple character art"
+        if gender_mix in ("Only boy", "Only man"):
+            if image_style == "Realistic":
+                return "RAW DSLR photo of two real adult men"
+            return "full body character art of two men"
+        if image_style == "Realistic":
+            return "RAW DSLR photo of two real adult women"
+        return "full body character art of two women"
+    if gender_mix in ("Only boy", "Only man"):
+        if image_style == "Realistic":
+            return "RAW DSLR photo of a real adult man age 19 or older"
+        return "adult man, full body character art, feet visible"
+    return prompt
+
+
+def adapt_gendered_text(value, people_count, gender_mix):
+    if not value:
+        return value
+    if people_count == "2 people":
+        if gender_mix in ("Only boy", "Only man"):
+            return value.replace("woman", "men").replace("girl", "men")
+        if gender_mix in ("Girl and boy", "Woman and man"):
+            return value.replace("woman", "adult woman and adult man").replace("girl", "adult woman and adult man")
+        return value.replace("woman", "women").replace("girl", "women")
+    if gender_mix in ("Only boy", "Only man"):
+        return value.replace("woman", "man").replace("girl", "man")
+    return value
+
+
+def image_defaults_for_style(image_style):
+    if image_style == "Realistic":
+        return {
+            "default_prompt": REALISTIC_IMAGE_PROMPT,
+            "ethnicity_options": REALISTIC_ETHNICITY_OPTIONS,
+            "appearance_options": REALISTIC_APPEARANCE_OPTIONS,
+            "outfit_options": REALISTIC_OUTFIT_OPTIONS,
+            "male_ethnicity_options": REALISTIC_MALE_ETHNICITY_OPTIONS,
+            "male_appearance_options": REALISTIC_MALE_APPEARANCE_OPTIONS,
+            "male_outfit_options": REALISTIC_MALE_OUTFIT_OPTIONS,
+            "background_options": REALISTIC_BACKGROUND_OPTIONS,
+            "pose_options": REALISTIC_POSE_OPTIONS,
+            "style_options": REALISTIC_STYLE_OPTIONS,
+        }
+    return {
+        "default_prompt": DEFAULT_IMAGE_PROMPT,
+        "ethnicity_options": ETHNICITY_OPTIONS,
+        "appearance_options": APPEARANCE_OPTIONS,
+        "outfit_options": OUTFIT_OPTIONS,
+        "male_ethnicity_options": MALE_ETHNICITY_OPTIONS,
+        "male_appearance_options": MALE_APPEARANCE_OPTIONS,
+        "male_outfit_options": MALE_OUTFIT_OPTIONS,
+        "background_options": BACKGROUND_OPTIONS,
+        "pose_options": POSE_OPTIONS,
+        "style_options": STYLE_OPTIONS,
+    }
+
+
+def build_random_image_prompt(
+    character,
+    request_text="",
+    image_style="Anime",
+    people_count="1 person",
+    gender_mix="Only girl",
+    action="Standing",
+    default_prompt=DEFAULT_IMAGE_PROMPT,
+    ethnicity_options_text=None,
+    appearance_options_text=None,
+    outfit_options_text=None,
+    male_ethnicity_options_text=None,
+    male_appearance_options_text=None,
+    male_outfit_options_text=None,
+    background_options_text=None,
+    pose_options_text=None,
+    style_options_text=None,
+):
+    char = CHARACTERS[character]
+    rng = random.Random(f"{character}-{request_text}-{time.time()}")
+    age = max(int(char.get("age", 19) or 19), 19)
+    people_count = resolve_radio_choice(people_count, PEOPLE_COUNT_OPTIONS, rng)
+    gender_mix = normalize_gender_for_people(people_count, gender_mix)
+    gender_mix = resolve_radio_choice(gender_mix, GENDER_MIX_OPTIONS, rng)
+    defaults = image_defaults_for_style(image_style)
+    ethnicity_options = parse_options_text(ethnicity_options_text, defaults["ethnicity_options"])
+    appearance_options = parse_options_text(appearance_options_text, defaults["appearance_options"])
+    outfit_options = parse_options_text(outfit_options_text, defaults["outfit_options"])
+    male_ethnicity_options = parse_options_text(male_ethnicity_options_text, defaults["male_ethnicity_options"])
+    male_appearance_options = parse_options_text(male_appearance_options_text, defaults["male_appearance_options"])
+    male_outfit_options = parse_options_text(male_outfit_options_text, defaults["male_outfit_options"])
+    background_options = parse_options_text(background_options_text, defaults["background_options"])
+    pose_options = parse_options_text(pose_options_text, defaults["pose_options"])
+    style_options = parse_options_text(style_options_text, defaults["style_options"])
+    ethnicity = rng.choice(ethnicity_options)
+    appearance = rng.choice(appearance_options)
+    outfit = rng.choice(outfit_options)
+    male_ethnicity = rng.choice(male_ethnicity_options)
+    male_appearance = rng.choice(male_appearance_options)
+    male_outfit = rng.choice(male_outfit_options)
+    background = rng.choice(background_options)
+    pose = action_prompt(action, people_count)
+    style_option = rng.choice(style_options)
+    subject = subject_prompt(people_count, gender_mix, age)
+    instruction = group_instruction(people_count, gender_mix)
+    if gender_mix in ("Only boy", "Only man"):
+        ethnicity = male_ethnicity
+        appearance = male_appearance
+        outfit = male_outfit
+    elif people_count == "2 people" and gender_mix in ("Girl and boy", "Woman and man"):
+        outfit = f"woman wearing {outfit}, man wearing {male_outfit}"
+        ethnicity = f"woman: {ethnicity}; man: {male_ethnicity}"
+        appearance = f"woman: {appearance}; man: {male_appearance}"
+    else:
+        ethnicity = adapt_gendered_text(ethnicity, people_count, gender_mix)
+        appearance = adapt_gendered_text(appearance, people_count, gender_mix)
+        outfit = adapt_gendered_text(outfit, people_count, gender_mix)
+    if not pose or (action or "").strip().lower() == "standing":
+        pose = rng.choice(pose_options)
+
+    default_prompt = adapt_default_prompt(default_prompt or defaults["default_prompt"], people_count, gender_mix, image_style)
+    style_prefix = "anime style, cel shading, clean manga line art"
+    quality_prompt = "full body, feet visible, natural proportions"
+    if image_style == "Realistic":
+        if people_count == "2 people":
+            if gender_mix in ("Girl and boy", "Woman and man"):
+                subject = "adult woman and adult man age 19 or older"
+            parts = [
+                "RAW DSLR photo, photorealistic",
+                f"{subject}, full body, both visible",
+                appearance,
+                outfit if "woman wearing" in outfit else f"wearing {outfit}",
+                pose,
+                background,
+                "real skin pores, realistic face and hands, no extra people",
+            ]
+        else:
+            parts = [
+                "RAW DSLR photo, photorealistic",
+                f"{subject}, full body, feet visible",
+                ethnicity,
+                appearance,
+                f"wearing {outfit}",
+                pose,
+                background,
+                "natural skin pores, realistic face and hands",
+            ]
+        return ", ".join(part for part in parts if part)
+
+    if people_count == "2 people":
+        parts = [
+            subject,
+            instruction,
+            f"{pose}",
+            default_prompt,
+            f"{ethnicity}",
+            f"{appearance}",
+            outfit if "woman wearing" in outfit else f"wearing {outfit}",
+            f"{background}",
+            "anime style, both full body, no extra people",
+        ]
+    else:
+        parts = [
+            default_prompt,
+            subject,
+            instruction,
+            f"{appearance}",
+            f"{ethnicity}",
+            f"wearing {outfit}",
+            f"{pose}",
+            f"{background}",
+            style_prefix,
+            style_option,
+            quality_prompt,
+        ]
+    return ", ".join(part for part in parts if part)
+
+
+def targeted_negative_prompt(prompt, base_negative=NEGATIVE_IMAGE_PROMPT):
+    text = (prompt or "").lower()
+    extra = []
+
+    hair_colors = {
+        "pink hair": ["white hair", "silver hair", "black hair", "blonde hair", "red hair"],
+        "red hair": ["white hair", "silver hair", "black hair", "blonde hair", "pink hair"],
+        "silver hair": ["white hair", "black hair", "blonde hair", "red hair", "pink hair"],
+        "blonde": ["white hair", "silver hair", "black hair", "red hair", "pink hair"],
+        "black hair": ["white hair", "silver hair", "blonde hair", "red hair", "pink hair"],
+        "brunette": ["white hair", "silver hair", "blonde hair", "red hair", "pink hair"],
+    }
+    for wanted, blocked in hair_colors.items():
+        if wanted in text:
+            extra.extend(blocked)
+            break
+
+    if "blue eyes" in text:
+        extra.extend(["brown eyes", "amber eyes", "gold eyes", "green eyes", "violet eyes"])
+    elif "gold eyes" in text:
+        extra.extend(["blue eyes", "brown eyes", "green eyes", "violet eyes"])
+    elif "violet eyes" in text:
+        extra.extend(["blue eyes", "brown eyes", "gold eyes", "green eyes"])
+
+    if any(word in text for word in ("swimsuit", "bikini")):
+        extra.extend(["dress", "coat", "jacket", "school uniform", "long sleeves", "bodysuit"])
+    elif "bodysuit" in text:
+        extra.extend(["dress", "bikini", "swimsuit", "skirt"])
+    elif "dress" in text:
+        extra.extend(["bikini", "swimsuit", "bodysuit", "armor"])
+
+    if "neon city rooftop" in text:
+        extra.extend(["plain gray background", "studio background", "empty background", "abstract background"])
+    elif "beach" in text:
+        extra.extend(["gray background", "city background", "indoor room"])
+    elif "kitchen" in text:
+        extra.extend(["gray background", "beach", "rooftop"])
+
+    if "photorealistic" in text or "real human" in text:
+        extra.extend(
+            [
+                "anime",
+                "cartoon",
+                "illustration",
+                "drawing",
+                "manga",
+                "cel shading",
+                "3d render",
+                "plastic skin",
+                "airbrushed skin",
+                "heavy makeup",
+                "mature face",
+                "old face",
+                "fashion model",
+                "glamour model",
+            ]
+        )
+
+    if "two main subjects only" in text:
+        extra.extend(["crowd", "background people", "third person", "extra person", "many people"])
+    elif "single main subject" in text:
+        extra.extend(["crowd", "background people", "second person", "extra person", "many people"])
+
+    seen = set()
+    cleaned_extra = []
+    for item in extra:
+        if item not in seen:
+            seen.add(item)
+            cleaned_extra.append(item)
+    return ", ".join(filter(None, [base_negative, ", ".join(cleaned_extra)]))
+
+
+def preview_image_prompt(
+    image_style,
+    people_count,
+    gender_mix,
+    action,
+    default_prompt,
+    ethnicity_options_text,
+    appearance_options_text,
+    outfit_options_text,
+    male_ethnicity_options_text,
+    male_appearance_options_text,
+    male_outfit_options_text,
+    background_options_text,
+    pose_options_text,
+    style_options_text,
+):
+    character = get_default_image_character()
+    if not character:
+        return ""
+    return build_random_image_prompt(
+        character,
+        image_style=image_style,
+        people_count=people_count,
+        gender_mix=gender_mix,
+        action=action,
+        default_prompt=default_prompt,
+        ethnicity_options_text=ethnicity_options_text,
+        appearance_options_text=appearance_options_text,
+        outfit_options_text=outfit_options_text,
+        male_ethnicity_options_text=male_ethnicity_options_text,
+        male_appearance_options_text=male_appearance_options_text,
+        male_outfit_options_text=male_outfit_options_text,
+        background_options_text=background_options_text,
+        pose_options_text=pose_options_text,
+        style_options_text=style_options_text,
+    )
+
+
+def random_image_prompt_options(image_style, people_count, gender_mix, action, default_prompt):
+    defaults = image_defaults_for_style(image_style)
+    default_prompt = default_prompt or defaults["default_prompt"]
+    if people_count == "Random":
+        people_count = random.choice([option for option in PEOPLE_COUNT_OPTIONS if option != "Random"])
+    gender_mix = normalize_gender_for_people(people_count, gender_mix)
+    if gender_mix == "Random":
+        gender_mix = random.choice([option for option in gender_choices_for_people(people_count) if option != "Random"])
+    if action == "Random":
+        action = random.choice([option for option in ACTION_OPTIONS if option != "Random"])
+    ethnicity = random.choice(defaults["ethnicity_options"])
+    appearance = random.choice(defaults["appearance_options"])
+    outfit = random.choice(defaults["outfit_options"])
+    male_ethnicity = random.choice(defaults["male_ethnicity_options"])
+    male_appearance = random.choice(defaults["male_appearance_options"])
+    male_outfit = random.choice(defaults["male_outfit_options"])
+    background = random.choice(defaults["background_options"])
+    pose = random.choice(defaults["pose_options"])
+    style = random.choice(defaults["style_options"])
+    preview = preview_image_prompt(
+        image_style,
+        people_count,
+        gender_mix,
+        action,
+        default_prompt,
+        ethnicity,
+        appearance,
+        outfit,
+        male_ethnicity,
+        male_appearance,
+        male_outfit,
+        background,
+        pose,
+        style,
+    )
+    show_female, show_male = gender_field_visibility(people_count, gender_mix)
+    return (
+        people_count,
+        gender_mix,
+        action,
+        gr.update(value=ethnicity, visible=show_female),
+        gr.update(value=appearance, visible=show_female),
+        gr.update(value=outfit, visible=show_female),
+        gr.update(value=male_ethnicity, visible=show_male),
+        gr.update(value=male_appearance, visible=show_male),
+        gr.update(value=male_outfit, visible=show_male),
+        background,
+        pose,
+        style,
+        preview,
+    )
+
+
+def load_image_style_prompt_options(image_style):
+    defaults = image_defaults_for_style(image_style)
+    default_prompt = defaults["default_prompt"]
+    ethnicity = random.choice(defaults["ethnicity_options"])
+    appearance = random.choice(defaults["appearance_options"])
+    outfit = random.choice(defaults["outfit_options"])
+    male_ethnicity = random.choice(defaults["male_ethnicity_options"])
+    male_appearance = random.choice(defaults["male_appearance_options"])
+    male_outfit = random.choice(defaults["male_outfit_options"])
+    background = random.choice(defaults["background_options"])
+    pose = random.choice(defaults["pose_options"])
+    style = random.choice(defaults["style_options"])
+    preview = preview_image_prompt(
+        image_style,
+        "1 person",
+        "Only girl",
+        "",
+        default_prompt,
+        ethnicity,
+        appearance,
+        outfit,
+        male_ethnicity,
+        male_appearance,
+        male_outfit,
+        background,
+        pose,
+        style,
+    )
+    return (
+        default_prompt,
+        "1 person",
+        "Only girl",
+        "",
+        gr.update(value=ethnicity, visible=True),
+        gr.update(value=appearance, visible=True),
+        gr.update(value=outfit, visible=True),
+        gr.update(value=male_ethnicity, visible=False),
+        gr.update(value=male_appearance, visible=False),
+        gr.update(value=male_outfit, visible=False),
+        background,
+        pose,
+        style,
+        preview,
+    )
+
+
+def image_style_from_video_style(video_style):
+    if video_style == "Anime":
+        return "Anime"
+    return "Realistic"
+
+
+def preview_video_prompt(
+    video_style,
+    people_count,
+    gender_mix,
+    action,
+    default_prompt,
+    ethnicity_options_text,
+    appearance_options_text,
+    outfit_options_text,
+    male_ethnicity_options_text,
+    male_appearance_options_text,
+    male_outfit_options_text,
+    background_options_text,
+    pose_options_text,
+    style_options_text,
+):
+    image_style = image_style_from_video_style(video_style)
+    prompt = preview_image_prompt(
+        image_style,
+        people_count,
+        gender_mix,
+        action,
+        default_prompt,
+        ethnicity_options_text,
+        appearance_options_text,
+        outfit_options_text,
+        male_ethnicity_options_text,
+        male_appearance_options_text,
+        male_outfit_options_text,
+        background_options_text,
+        pose_options_text,
+        style_options_text,
+    )
+    if image_style == "Anime":
+        return (
+            f"{prompt}, anime video, cute design, smooth motion, stable face, clear line art"
+        )
+    return (
+        f"{prompt}, real camera video, photorealistic human, natural skin pores, realistic face, "
+        "centered medium full body shot, stable tripod camera, slow gentle motion, natural daylight, no close-up"
+    )
+
+
+def random_video_prompt_options(video_style, people_count, gender_mix, action, default_prompt):
+    image_style = image_style_from_video_style(video_style)
+    result = random_image_prompt_options(image_style, people_count, gender_mix, action, default_prompt)
+    return result[:-1] + (
+        preview_video_prompt(
+            video_style,
+            result[0],
+            result[1],
+            result[2],
+            default_prompt or image_defaults_for_style(image_style)["default_prompt"],
+            result[3]["value"] if isinstance(result[3], dict) and "value" in result[3] else result[3],
+            result[4]["value"] if isinstance(result[4], dict) and "value" in result[4] else result[4],
+            result[5]["value"] if isinstance(result[5], dict) and "value" in result[5] else result[5],
+            result[6]["value"] if isinstance(result[6], dict) and "value" in result[6] else result[6],
+            result[7]["value"] if isinstance(result[7], dict) and "value" in result[7] else result[7],
+            result[8]["value"] if isinstance(result[8], dict) and "value" in result[8] else result[8],
+            result[9],
+            result[10],
+            result[11],
+        ),
+    )
+
+
+def load_video_style_prompt_options(video_style):
+    image_style = image_style_from_video_style(video_style)
+    result = load_image_style_prompt_options(image_style)
+    return result[:-1] + (
+        preview_video_prompt(
+            video_style,
+            result[1],
+            result[2],
+            result[3],
+            result[0],
+            result[4]["value"] if isinstance(result[4], dict) and "value" in result[4] else result[4],
+            result[5]["value"] if isinstance(result[5], dict) and "value" in result[5] else result[5],
+            result[6]["value"] if isinstance(result[6], dict) and "value" in result[6] else result[6],
+            result[7]["value"] if isinstance(result[7], dict) and "value" in result[7] else result[7],
+            result[8]["value"] if isinstance(result[8], dict) and "value" in result[8] else result[8],
+            result[9]["value"] if isinstance(result[9], dict) and "value" in result[9] else result[9],
+            result[10],
+            result[11],
+            result[12],
+        ),
+    )
+
+
+def generate_image_status():
+    return "🎨 Generating image..."
+
+
+def get_image_pipe(dtype_override=None):
+    global image_pipe, image_pipe_dtype
+    if image_pipe is not None:
+        return image_pipe
+
+    try:
+        from diffusers import StableDiffusionPipeline
+    except ImportError as exc:
+        raise RuntimeError(
+            "Image model packages are not installed. Run: "
+            "pip install diffusers torch transformers accelerate safetensors"
+        ) from exc
+
+    device = get_torch_device()
+    dtype = dtype_override or get_image_torch_dtype(device)
+    image_pipe_dtype = dtype
+    variant = "fp16" if device == "cuda" else None
+    image_kwargs = {
+        "torch_dtype": dtype,
+        "use_safetensors": True,
+        "local_files_only": not ALLOW_MODEL_DOWNLOAD,
+        "safety_checker": None,
+        "requires_safety_checker": False,
+        "low_cpu_mem_usage": True,
+    }
+    if variant:
+        image_kwargs["variant"] = variant
+
+    try:
+        image_pipe = StableDiffusionPipeline.from_pretrained(IMAGE_MODEL_ID, **image_kwargs)
+    except Exception as exc:
+        if "watermark ratio" in str(exc):
+            raise RuntimeError(
+                "PyTorch MPS rejected the current memory watermark settings. "
+                "Restart the app so PYTORCH_MPS_LOW_WATERMARK_RATIO=0.0 and "
+                "PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.95 are applied before torch loads."
+            ) from exc
+        raise RuntimeError(
+            "A real anime image model is needed for good Image tab results. "
+            f"The configured image model '{IMAGE_MODEL_ID}' is not downloaded on this Mac yet. "
+            "Run the app with ALLOW_MODEL_DOWNLOAD=1 one time, or download that model into the "
+            "Hugging Face cache, then click Generate New Image again."
+        ) from exc
+
+    configure_pipeline_for_performance(image_pipe)
+    if device != "cpu":
+        image_pipe = image_pipe.to(device=device, dtype=dtype)
+    else:
+        image_pipe = image_pipe.to("cpu")
+
+    return image_pipe
+
+
+def reset_image_pipe():
+    global image_pipe, image_pipe_dtype
+    image_pipe = None
+    image_pipe_dtype = None
+    clear_torch_cache()
+
+
+def generate_with_anime_image_model(
+    character,
+    request_text="",
+    update_profile=True,
+    image_style="Anime",
+    default_prompt=DEFAULT_IMAGE_PROMPT,
+    negative_prompt=NEGATIVE_IMAGE_PROMPT,
+    ethnicity_options_text=None,
+    appearance_options_text=None,
+    outfit_options_text=None,
+    background_options_text=None,
+    pose_options_text=None,
+    style_options_text=None,
+    final_prompt=None,
+):
+    prompt = (final_prompt or "").strip()
+    if not prompt:
+        prompt = build_random_image_prompt(
+            character,
+            request_text=request_text,
+            image_style=image_style,
+            default_prompt=default_prompt,
+            ethnicity_options_text=ethnicity_options_text,
+            appearance_options_text=appearance_options_text,
+            outfit_options_text=outfit_options_text,
+            background_options_text=background_options_text,
+            pose_options_text=pose_options_text,
+            style_options_text=style_options_text,
+        )
+    generator_seed = random.randint(0, 2**31 - 1)
+    guidance_scale = 6.5 if image_style == "Realistic" else IMAGE_GUIDANCE
+    image_steps = max(18, min(IMAGE_STEPS, 24))
+    image = None
+    last_blank = False
+
+    for retry_index in range(2):
+        local_image_pipe = get_image_pipe(torch.float32 if retry_index else None)
+        generator = torch.Generator(device="cpu").manual_seed(generator_seed)
+        with torch.inference_mode():
+            image = local_image_pipe(
+                prompt=prompt,
+                negative_prompt=targeted_negative_prompt(prompt, negative_prompt or NEGATIVE_IMAGE_PROMPT),
+                width=IMAGE_WIDTH,
+                height=IMAGE_HEIGHT,
+                num_inference_steps=image_steps,
+                guidance_scale=guidance_scale,
+                generator=generator,
+            ).images[0]
+
+        last_blank = not image.getbbox()
+        if not last_blank:
+            break
+        if get_torch_device() == "mps" and image_pipe_dtype == torch.float16:
+            reset_image_pipe()
+            continue
+        break
+
+    if last_blank:
+        raise RuntimeError("Image model returned a blank image even after retrying with the safer dtype.")
+
+    clear_torch_cache()
+    GENERATED_DIR.mkdir(exist_ok=True)
+    filename = re.sub(r"[^A-Za-z0-9_-]+", "_", character).strip("_") or "image"
+    path = (GENERATED_DIR / f"{filename}_anime_{int(time.time())}.png").resolve()
+    image.save(path)
+
+    if update_profile:
+        CHARACTERS[character]["avatar"] = str(path)
+        CHARACTERS[character]["image_model"] = IMAGE_MODEL_ID
+        CHARACTERS[character]["image_prompt"] = prompt
+        save_characters()
+    return str(path), f"Generated {image_style.lower()} image with {IMAGE_MODEL_ID}: {prompt}"
+
+
+def frame_to_image(frame):
+    if isinstance(frame, Image.Image):
+        return frame.convert("RGB")
+    return Image.fromarray(frame).convert("RGB")
+
+
+def ltx_frame_count(value):
+    requested_frames = max(9, int(value))
+    return ((requested_frames - 1) // FRAME_MULTIPLE) * FRAME_MULTIPLE + 1
+
+
+def generate_with_ltx_image_model(character, request_text="", update_profile=True):
+    prompt = build_random_image_prompt(character, request_text=request_text)
+    local_ltx_pipe = load_pipeline()
+    width = min(LTX_IMAGE_WIDTH, 512)
+    height = min(LTX_IMAGE_HEIGHT, 512)
+    frame_count = ltx_frame_count(LTX_IMAGE_FRAMES)
+
+    with torch.inference_mode():
+        result = local_ltx_pipe(
+            prompt=prompt,
+            negative_prompt=NEGATIVE_IMAGE_PROMPT,
+            width=width,
+            height=height,
+            num_frames=frame_count,
+            num_inference_steps=max(4, min(LTX_IMAGE_STEPS, 12)),
+            guidance_scale=min(LTX_IMAGE_GUIDANCE, 3.5),
+            max_sequence_length=128,
+        )
+
+    generated_frames = result.frames[0]
+    image = frame_to_image(generated_frames[len(generated_frames) // 2])
+    clear_torch_cache()
+
+    GENERATED_DIR.mkdir(exist_ok=True)
+    filename = re.sub(r"[^A-Za-z0-9_-]+", "_", character).strip("_") or "image"
+    path = (GENERATED_DIR / f"{filename}_ltx_{int(time.time())}.png").resolve()
+    image.save(path)
+
+    if update_profile:
+        CHARACTERS[character]["avatar"] = str(path)
+        CHARACTERS[character]["image_model"] = "Local LTX model"
+        CHARACTERS[character]["image_prompt"] = prompt
+        save_characters()
+    return str(path), f"Generated image with the same local LTX model: {prompt}"
+
+
+def generate_character_image(
+    character,
+    update_profile=True,
+    request_text="",
+    image_style="Anime",
+    default_prompt=DEFAULT_IMAGE_PROMPT,
+    negative_prompt=NEGATIVE_IMAGE_PROMPT,
+    ethnicity_options_text=None,
+    appearance_options_text=None,
+    outfit_options_text=None,
+    background_options_text=None,
+    pose_options_text=None,
+    style_options_text=None,
+    final_prompt=None,
+):
+    if not character or character not in CHARACTERS:
+        character = get_default_image_character()
+    if not character or character not in CHARACTERS:
+        return None, "No image character is available."
+
+    GENERATED_DIR.mkdir(exist_ok=True)
+    try:
+        return generate_with_anime_image_model(
+            character,
+            request_text=request_text,
+            update_profile=update_profile,
+            image_style=image_style,
+            default_prompt=default_prompt,
+            negative_prompt=negative_prompt,
+            ethnicity_options_text=ethnicity_options_text,
+            appearance_options_text=appearance_options_text,
+            outfit_options_text=outfit_options_text,
+            background_options_text=background_options_text,
+            pose_options_text=pose_options_text,
+            style_options_text=style_options_text,
+            final_prompt=final_prompt,
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        clear_torch_cache()
+        return None, f"Anime image generation failed: {exc}"
+
+
+def generate_profile_image_from_app(
+    image_style,
+    final_prompt,
+):
+    return generate_character_image(
+        get_default_image_character(),
+        update_profile=True,
+        image_style=image_style,
+        negative_prompt=NEGATIVE_IMAGE_PROMPT,
+        final_prompt=final_prompt,
+    )
+
+
+def get_torch_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def get_torch_dtype(device):
+    if device == "cuda":
+        return torch.bfloat16
+    if device == "mps":
+        return torch.float16
+    return torch.float32
+
+
+def get_image_torch_dtype(device):
+    if device == "cuda":
+        return torch.float16
+    if device == "mps" and IMAGE_MPS_DTYPE in ("fp16", "float16", "half"):
+        return torch.float16
+    return torch.float32
+
+
+def is_m2max_profile():
+    return PERFORMANCE_PROFILE in ("m2max", "m2_max", "apple_m2_max", "mps_fast")
+
+
+def clear_torch_cache():
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+        try:
+            torch.mps.empty_cache()
+        except RuntimeError as exc:
+            if "watermark ratio" not in str(exc):
+                raise
+
+
+def configure_pipeline_for_performance(loaded_pipe):
+    if not LOW_MEMORY_MODE and is_m2max_profile():
+        for method_name in ("disable_attention_slicing", "disable_vae_slicing", "disable_vae_tiling"):
+            method = getattr(loaded_pipe, method_name, None)
+            if method is not None:
+                try:
+                    method()
+                except TypeError:
+                    pass
+        return
+
+    for method_name in ("enable_attention_slicing", "enable_vae_slicing", "enable_vae_tiling"):
+        method = getattr(loaded_pipe, method_name, None)
+        if method is not None:
+            try:
+                method()
+            except TypeError:
+                try:
+                    method("auto")
+                except TypeError:
+                    pass
+
+
+def missing_model_files():
+    required_options = [
+        [[MODEL_DIR / "model_index.json"]],
+        [[MODEL_DIR / "scheduler" / "scheduler_config.json"]],
+        [[MODEL_DIR / "tokenizer" / "spiece.model"]],
+        [[MODEL_DIR / "tokenizer" / "tokenizer_config.json"]],
+        [[MODEL_DIR / "transformer" / "config.json"]],
+        [
+            [MODEL_DIR / "transformer" / "diffusion_pytorch_model.safetensors"],
+            [
+                MODEL_DIR / "transformer" / "diffusion_pytorch_model.safetensors.index.json",
+                MODEL_DIR / "transformer" / "diffusion_pytorch_model-00001-of-00002.safetensors",
+                MODEL_DIR / "transformer" / "diffusion_pytorch_model-00002-of-00002.safetensors",
+            ],
+        ],
+        [[MODEL_DIR / "vae" / "config.json"]],
+        [[MODEL_DIR / "vae" / "diffusion_pytorch_model.safetensors"]],
+        [[MODEL_DIR / "text_encoder" / "config.json"]],
+        [[MODEL_DIR / "text_encoder" / "model-00001-of-00004.safetensors"]],
+        [[MODEL_DIR / "text_encoder" / "model-00002-of-00004.safetensors"]],
+        [[MODEL_DIR / "text_encoder" / "model-00003-of-00004.safetensors"]],
+        [[MODEL_DIR / "text_encoder" / "model-00004-of-00004.safetensors"]],
+    ]
+
+    missing = []
+    for options in required_options:
+        if not any(all(path.exists() for path in option) for option in options):
+            missing.append(
+                " or ".join(
+                    " + ".join(str(path.relative_to(BASE_DIR)) for path in option)
+                    for option in options
+                )
+            )
+    return missing
+
+
+def load_pipeline():
+    global pipe
+    if pipe is not None:
+        return pipe
+
+    missing = missing_model_files()
+    if missing:
+        missing_list = "\n".join(f"- {item}" for item in missing)
+        raise RuntimeError(
+            "The local LTX model folder is incomplete.\n\n"
+            f"Missing files:\n{missing_list}\n\n"
+            "Download the missing files, then restart this app. Example:\n"
+            'hf download Lightricks/LTX-Video --local-dir models --include "vae/*" '
+            '"text_encoder/*" "tokenizer/*" "scheduler/*" "model_index.json"'
+        )
+
+    device = get_torch_device()
+    dtype = get_torch_dtype(device)
+    device_map = "cuda" if device == "cuda" else None
+
+    kwargs = {
+        "torch_dtype": dtype,
+        "local_files_only": True,
+        "low_cpu_mem_usage": True,
+    }
+    if device_map:
+        kwargs["device_map"] = device_map
+
+    loaded_pipe = LTXPipeline.from_pretrained(MODEL_DIR, **kwargs)
+    configure_pipeline_for_performance(loaded_pipe)
+    if not device_map and device != "cpu":
+        loaded_pipe.to(device=device, dtype=dtype)
+
+    pipe = loaded_pipe
+    return pipe
+
+
+def seconds_to_frames(seconds):
+    target_frames = max(1, int(round(float(seconds) * VIDEO_FPS)))
+    return max(9, ((target_frames - 1) // FRAME_MULTIPLE) * FRAME_MULTIPLE + 1)
+
+
+def max_frames_for_speed_mode(speed_mode):
+    if speed_mode == "Fastest":
+        return FASTEST_FRAMES_PER_CLIP
+    if speed_mode in ("Balanced", "Clear"):
+        return BALANCED_FRAMES_PER_CLIP
+    return MAX_FRAMES_PER_CLIP
+
+
+def split_frame_count(total_frames, max_frames_per_clip=MAX_FRAMES_PER_CLIP):
+    remaining = int(total_frames)
+    frame_counts = []
+    while remaining > 0:
+        if remaining <= max_frames_per_clip:
+            frame_counts.append(max(9, ((remaining - 1) // FRAME_MULTIPLE) * FRAME_MULTIPLE + 1))
+            break
+
+        frame_counts.append(max_frames_per_clip)
+        remaining -= max_frames_per_clip
+
+    return frame_counts
+
+
+def default_auto_prompt(style):
+    base_prompt = (
+        "A brave warrior holding a glowing sword faces the king of dragons on a stormy mountain peak, "
+        "dramatic camera movement, sparks in the air, epic fantasy action scene"
+    )
+    if style == "Anime":
+        return f"{base_prompt}, anime battle scene, dynamic pose, expressive character art"
+    if style == "Realistic":
+        return f"{base_prompt}, realistic cinematic lighting, detailed armor, volumetric smoke"
+    return base_prompt
+
+
+def fast_preset():
+    return 512, 512, 1, 8, 4.0
+
+
+def balanced_preset():
+    return 512, 576, 2, 12, 4.2
+
+
+def clear_preset():
+    return 512, 640, 2, 16, 4.4
+
+
+def speed_mode_preset(speed_mode):
+    if speed_mode == "Fastest":
+        return fast_preset()
+    if speed_mode == "Balanced":
+        return balanced_preset()
+    if speed_mode == "Clear":
+        return clear_preset()
+    return (gr.update(), gr.update(), gr.update(), gr.update(), gr.update())
+
+
+def apply_speed_mode(speed_mode, width, height, duration_seconds, steps, guidance_scale):
+    width = int(width)
+    height = int(height)
+    duration_seconds = float(duration_seconds)
+    steps = int(steps)
+    guidance_scale = float(guidance_scale)
+
+    if speed_mode == "Fastest":
+        return min(width, 512), min(height, 512), duration_seconds, max(8, min(steps, 8)), min(max(guidance_scale, 4.0), 4.0)
+    if speed_mode == "Balanced":
+        return min(width, 512), min(height, 608), duration_seconds, max(12, min(steps, 12)), min(max(guidance_scale, 4.2), 4.2)
+    if speed_mode == "Clear":
+        return min(width, 512), min(height, 640), duration_seconds, max(16, min(steps, 18)), min(max(guidance_scale, 4.4), 4.6)
+    return width, height, duration_seconds, steps, guidance_scale
+
+
+def apply_style(prompt, negative_prompt, style):
+    prompt = prompt.strip()
+    negative_prompt = (negative_prompt or "").strip()
+    quality_prompt = (
+        "realistic face, natural skin pores, realistic hands, smooth gentle motion, stable tripod camera, clear video"
+    )
+    negative_prompt = ", ".join(filter(None, [negative_prompt, VIDEO_NEGATIVE_PROMPT]))
+
+    if style == "Anime":
+        prompt = f"{prompt}, anime style, expressive 2D animation, clean line art, vibrant colors, {quality_prompt}"
+        negative_prompt = ", ".join(filter(None, [negative_prompt, "photorealistic, live action, 3d render"]))
+    elif style == "Realistic":
+        prompt = (
+            f"{prompt}, real camera footage, photorealistic human, natural daylight, "
+            f"centered medium full body shot, no close-up, no cutaway, {quality_prompt}"
+        )
+        negative_prompt = ", ".join(filter(None, [negative_prompt, "illustration, painting, airbrushed skin, plastic skin, doll face, unreal face"]))
+    else:
+        prompt = f"{prompt}, {quality_prompt}"
+
+    return prompt, negative_prompt
+
+
+def stitch_videos(segment_paths, output_path):
+    with imageio.get_writer(str(output_path), fps=VIDEO_FPS, codec="libx264", macro_block_size=None) as writer:
+        for segment_path in segment_paths:
+            reader = imageio.get_reader(str(segment_path))
+            try:
+                for frame in reader:
+                    writer.append_data(frame)
+            finally:
+                reader.close()
+
+
+def next_output_path():
+    OUTPUT_DIR.mkdir(exist_ok=True)
+    output_number = 1
+    while True:
+        output_path = OUTPUT_DIR / f"ltx_output_{output_number}.mp4"
+        if not output_path.exists():
+            return output_path, output_number
+        output_number += 1
+
+
+def generate_video(
+    prompt,
+    negative_prompt,
+    style,
+    speed_mode,
+    width,
+    height,
+    duration_seconds,
+    steps,
+    guidance_scale,
+    seed,
+):
+    if not prompt or not prompt.strip():
+        raise gr.Error("Enter a prompt first.")
+
+    try:
+        width, height, duration_seconds, steps, guidance_scale = apply_speed_mode(
+            speed_mode, width, height, duration_seconds, steps, guidance_scale
+        )
+        requested_seconds = float(duration_seconds)
+        duration_seconds = min(requested_seconds, MAX_SINGLE_PASS_SECONDS)
+        styled_prompt, styled_negative_prompt = apply_style(prompt, negative_prompt, style)
+        frame_count = seconds_to_frames(duration_seconds)
+
+        generator = None
+        if seed is not None and int(seed) >= 0:
+            device = "cuda" if get_torch_device() == "cuda" else "cpu"
+            generator = torch.Generator(device=device).manual_seed(int(seed))
+
+        ltx = load_pipeline()
+        OUTPUT_DIR.mkdir(exist_ok=True)
+        output_path, output_number = next_output_path()
+
+        with torch.inference_mode():
+            result = ltx(
+                prompt=styled_prompt,
+                negative_prompt=styled_negative_prompt,
+                width=width,
+                height=height,
+                num_frames=frame_count,
+                num_inference_steps=steps,
+                guidance_scale=guidance_scale,
+                generator=generator,
+                max_sequence_length=128,
+            )
+
+        export_to_video(result.frames[0], str(output_path), fps=VIDEO_FPS)
+        del result
+        clear_torch_cache()
+
+        actual_seconds = frame_count / VIDEO_FPS
+        device = get_torch_device().upper()
+        return (
+            str(output_path),
+            f"Video generated successfully. Length: about {actual_seconds:.1f}s. "
+            f"Used one single-pass {speed_mode} render at {width}x{height}, {steps} steps on {device}."
+            + (
+                f" Requested {requested_seconds:.1f}s was capped to {MAX_SINGLE_PASS_SECONDS}s to avoid MPS memory crash."
+                if requested_seconds > MAX_SINGLE_PASS_SECONDS
+                else ""
+            ),
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        clear_torch_cache()
+        return None, f"Error: {exc}"
+
+
+with gr.Blocks(title="Local LTX Video Generator") as demo:
+    gr.Markdown("# Local LTX Video Generator")
+    with gr.Tabs():
+        with gr.Tab("Generate Image"):
+            initial_ethnicity = random.choice(ETHNICITY_OPTIONS)
+            initial_appearance = random.choice(APPEARANCE_OPTIONS)
+            initial_outfit = random.choice(OUTFIT_OPTIONS)
+            initial_male_ethnicity = random.choice(MALE_ETHNICITY_OPTIONS)
+            initial_male_appearance = random.choice(MALE_APPEARANCE_OPTIONS)
+            initial_male_outfit = random.choice(MALE_OUTFIT_OPTIONS)
+            initial_background = random.choice(BACKGROUND_OPTIONS)
+            initial_pose = random.choice(POSE_OPTIONS)
+            initial_style_option = random.choice(STYLE_OPTIONS)
+            image_style = gr.Radio(
+                ["Anime", "Realistic"],
+                value="Anime",
+                label="Image style",
+            )
+            with gr.Row():
+                image_people_count = gr.Radio(
+                    PEOPLE_COUNT_OPTIONS,
+                    value="1 person",
+                    label="People",
+                )
+                image_gender_mix = gr.Radio(
+                    SINGLE_GENDER_OPTIONS,
+                    value="Only girl",
+                    label="Gender",
+                )
+            image_action = gr.Textbox(
+                value="",
+                label="Action",
+                lines=1,
+            )
+            image_default_prompt = gr.Textbox(
+                label="DEFAULT_IMAGE_PROMPT",
+                lines=3,
+                value=DEFAULT_IMAGE_PROMPT,
+            )
+            with gr.Accordion("Prompt option lists", open=True):
+                image_random_options = gr.Button("Load random prompt options", variant="secondary")
+                image_ethnicity_options = gr.Textbox(
+                    label="ETHNICITY_OPTIONS",
+                    lines=1,
+                    value=initial_ethnicity,
+                )
+                image_appearance_options = gr.Textbox(
+                    label="APPEARANCE_OPTIONS",
+                    lines=1,
+                    value=initial_appearance,
+                )
+                image_outfit_options = gr.Textbox(
+                    label="OUTFIT_OPTIONS",
+                    lines=1,
+                    value=initial_outfit,
+                )
+                image_male_ethnicity_options = gr.Textbox(
+                    label="MAN_ETHNICITY_OPTIONS",
+                    lines=1,
+                    value=initial_male_ethnicity,
+                    visible=False,
+                )
+                image_male_appearance_options = gr.Textbox(
+                    label="MAN_APPEARANCE_OPTIONS",
+                    lines=1,
+                    value=initial_male_appearance,
+                    visible=False,
+                )
+                image_male_outfit_options = gr.Textbox(
+                    label="MAN_OUTFIT_OPTIONS",
+                    lines=1,
+                    value=initial_male_outfit,
+                    visible=False,
+                )
+                image_background_options = gr.Textbox(
+                    label="BACKGROUND_OPTIONS",
+                    lines=1,
+                    value=initial_background,
+                )
+                image_pose_options = gr.Textbox(
+                    label="POSE_OPTIONS",
+                    lines=1,
+                    value=initial_pose,
+                )
+                image_style_options = gr.Textbox(
+                    label="STYLE_OPTIONS",
+                    lines=1,
+                    value=initial_style_option,
+                )
+            image_prompt_preview = gr.Textbox(
+                label="Current prompt preview",
+                lines=4,
+                value=preview_image_prompt(
+                    "Anime",
+                    "1 person",
+                    "Only girl",
+                    "",
+                    DEFAULT_IMAGE_PROMPT,
+                    initial_ethnicity,
+                    initial_appearance,
+                    initial_outfit,
+                    initial_male_ethnicity,
+                    initial_male_appearance,
+                    initial_male_outfit,
+                    initial_background,
+                    initial_pose,
+                    initial_style_option,
+                ),
+                interactive=True,
+            )
+            image_output = gr.Image(height=520, label="Image")
+            image_status = gr.Markdown("")
+            image_generate = gr.Button("🎨 Generate New Image", variant="secondary")
+
+            image_prompt_inputs = [
+                image_style,
+                image_people_count,
+                image_gender_mix,
+                image_action,
+                image_default_prompt,
+                image_ethnicity_options,
+                image_appearance_options,
+                image_outfit_options,
+                image_male_ethnicity_options,
+                image_male_appearance_options,
+                image_male_outfit_options,
+                image_background_options,
+                image_pose_options,
+                image_style_options,
+            ]
+            for image_prompt_input in image_prompt_inputs:
+                image_prompt_input.change(
+                    preview_image_prompt,
+                    inputs=image_prompt_inputs,
+                    outputs=image_prompt_preview,
+                )
+
+            image_people_count.change(
+                update_gender_choices,
+                inputs=[image_people_count, image_gender_mix],
+                outputs=[
+                    image_gender_mix,
+                    image_ethnicity_options,
+                    image_appearance_options,
+                    image_outfit_options,
+                    image_male_ethnicity_options,
+                    image_male_appearance_options,
+                    image_male_outfit_options,
+                ],
+            )
+
+            image_gender_mix.change(
+                update_prompt_option_visibility,
+                inputs=[image_people_count, image_gender_mix],
+                outputs=[
+                    image_ethnicity_options,
+                    image_appearance_options,
+                    image_outfit_options,
+                    image_male_ethnicity_options,
+                    image_male_appearance_options,
+                    image_male_outfit_options,
+                ],
+            )
+
+            image_style.change(
+                load_image_style_prompt_options,
+                inputs=[image_style],
+                outputs=[
+                    image_default_prompt,
+                    image_people_count,
+                    image_gender_mix,
+                    image_action,
+                    image_ethnicity_options,
+                    image_appearance_options,
+                    image_outfit_options,
+                    image_male_ethnicity_options,
+                    image_male_appearance_options,
+                    image_male_outfit_options,
+                    image_background_options,
+                    image_pose_options,
+                    image_style_options,
+                    image_prompt_preview,
+                ],
+            )
+
+            image_random_options.click(
+                random_image_prompt_options,
+                inputs=[
+                    image_style,
+                    image_people_count,
+                    image_gender_mix,
+                    image_action,
+                    image_default_prompt,
+                ],
+                outputs=[
+                    image_people_count,
+                    image_gender_mix,
+                    image_action,
+                    image_ethnicity_options,
+                    image_appearance_options,
+                    image_outfit_options,
+                    image_male_ethnicity_options,
+                    image_male_appearance_options,
+                    image_male_outfit_options,
+                    image_background_options,
+                    image_pose_options,
+                    image_style_options,
+                    image_prompt_preview,
+                ],
+            )
+
+            image_generate.click(generate_image_status, outputs=image_status).then(
+                generate_profile_image_from_app,
+                inputs=[
+                    image_style,
+                    image_prompt_preview,
+                ],
+                outputs=[image_output, image_status],
+            )
+
+        with gr.Tab("Generate Video"):
+            with gr.Row():
+                with gr.Column():
+                    style = gr.Radio(
+                        ["Normal", "Anime", "Realistic"],
+                        value="Realistic",
+                        label="Visual style",
+                    )
+                    video_initial_ethnicity = random.choice(REALISTIC_ETHNICITY_OPTIONS)
+                    video_initial_appearance = random.choice(REALISTIC_APPEARANCE_OPTIONS)
+                    video_initial_outfit = random.choice(REALISTIC_OUTFIT_OPTIONS)
+                    video_initial_male_ethnicity = random.choice(REALISTIC_MALE_ETHNICITY_OPTIONS)
+                    video_initial_male_appearance = random.choice(REALISTIC_MALE_APPEARANCE_OPTIONS)
+                    video_initial_male_outfit = random.choice(REALISTIC_MALE_OUTFIT_OPTIONS)
+                    video_initial_background = random.choice(REALISTIC_BACKGROUND_OPTIONS)
+                    video_initial_pose = random.choice(REALISTIC_POSE_OPTIONS)
+                    video_initial_style_option = random.choice(REALISTIC_STYLE_OPTIONS)
+                    with gr.Row():
+                        video_people_count = gr.Radio(
+                            PEOPLE_COUNT_OPTIONS,
+                            value="1 person",
+                            label="People",
+                        )
+                        video_gender_mix = gr.Radio(
+                            SINGLE_GENDER_OPTIONS,
+                            value="Only girl",
+                            label="Gender",
+                        )
+                    video_action = gr.Textbox(
+                        value="",
+                        label="Action",
+                        lines=1,
+                    )
+                    video_default_prompt = gr.Textbox(
+                        label="VIDEO_DEFAULT_PROMPT",
+                        lines=3,
+                        value=REALISTIC_IMAGE_PROMPT,
+                    )
+                    with gr.Accordion("Video prompt option lists", open=False):
+                        video_random_options = gr.Button("Load random video prompt options", variant="secondary")
+                        video_ethnicity_options = gr.Textbox(
+                            label="ETHNICITY_OPTIONS",
+                            lines=1,
+                            value=video_initial_ethnicity,
+                        )
+                        video_appearance_options = gr.Textbox(
+                            label="APPEARANCE_OPTIONS",
+                            lines=1,
+                            value=video_initial_appearance,
+                        )
+                        video_outfit_options = gr.Textbox(
+                            label="OUTFIT_OPTIONS",
+                            lines=1,
+                            value=video_initial_outfit,
+                        )
+                        video_male_ethnicity_options = gr.Textbox(
+                            label="MAN_ETHNICITY_OPTIONS",
+                            lines=1,
+                            value=video_initial_male_ethnicity,
+                            visible=False,
+                        )
+                        video_male_appearance_options = gr.Textbox(
+                            label="MAN_APPEARANCE_OPTIONS",
+                            lines=1,
+                            value=video_initial_male_appearance,
+                            visible=False,
+                        )
+                        video_male_outfit_options = gr.Textbox(
+                            label="MAN_OUTFIT_OPTIONS",
+                            lines=1,
+                            value=video_initial_male_outfit,
+                            visible=False,
+                        )
+                        video_background_options = gr.Textbox(
+                            label="BACKGROUND_OPTIONS",
+                            lines=1,
+                            value=video_initial_background,
+                        )
+                        video_pose_options = gr.Textbox(
+                            label="POSE_OPTIONS",
+                            lines=1,
+                            value=video_initial_pose,
+                        )
+                        video_style_options = gr.Textbox(
+                            label="STYLE_OPTIONS",
+                            lines=1,
+                            value=video_initial_style_option,
+                        )
+                    prompt = gr.Textbox(
+                        label="Prompt",
+                        lines=5,
+                        value=preview_video_prompt(
+                            "Realistic",
+                            "1 person",
+                            "Only girl",
+                            "",
+                            REALISTIC_IMAGE_PROMPT,
+                            video_initial_ethnicity,
+                            video_initial_appearance,
+                            video_initial_outfit,
+                            video_initial_male_ethnicity,
+                            video_initial_male_appearance,
+                            video_initial_male_outfit,
+                            video_initial_background,
+                            video_initial_pose,
+                            video_initial_style_option,
+                        ),
+                    )
+                    auto_prompt = gr.Button("Auto generate prompt")
+                    speed_mode = gr.Radio(
+                        ["Fastest", "Balanced", "Clear", "Manual"],
+                        value="Clear",
+                        label="Speed mode",
+                    )
+                    negative_prompt = gr.Textbox(label="Negative prompt", lines=3, value=VIDEO_NEGATIVE_PROMPT)
+                    with gr.Row():
+                        width = gr.Slider(256, 1024, value=512, step=32, label="Width")
+                        height = gr.Slider(256, 1024, value=640, step=32, label="Height")
+                    with gr.Row():
+                        duration_seconds = gr.Slider(
+                            1,
+                            MAX_SINGLE_PASS_SECONDS,
+                            value=1,
+                            step=1,
+                            label="Video length (seconds)",
+                        )
+                        steps = gr.Slider(1, 50, value=16, step=1, label="Quality steps")
+                    with gr.Row():
+                        guidance_scale = gr.Slider(1.0, 10.0, value=4.4, step=0.1, label="Guidance")
+                        seed = gr.Number(value=-1, precision=0, label="Seed (-1 for random)")
+                    generate = gr.Button("Generate", variant="primary")
+                with gr.Column():
+                    video = gr.Video(label="Output")
+                    status = gr.Textbox(label="Status", interactive=False)
+
+            video_prompt_inputs = [
+                style,
+                video_people_count,
+                video_gender_mix,
+                video_action,
+                video_default_prompt,
+                video_ethnicity_options,
+                video_appearance_options,
+                video_outfit_options,
+                video_male_ethnicity_options,
+                video_male_appearance_options,
+                video_male_outfit_options,
+                video_background_options,
+                video_pose_options,
+                video_style_options,
+            ]
+            for video_prompt_input in video_prompt_inputs:
+                video_prompt_input.change(
+                    preview_video_prompt,
+                    inputs=video_prompt_inputs,
+                    outputs=prompt,
+                )
+
+            video_people_count.change(
+                update_gender_choices,
+                inputs=[video_people_count, video_gender_mix],
+                outputs=[
+                    video_gender_mix,
+                    video_ethnicity_options,
+                    video_appearance_options,
+                    video_outfit_options,
+                    video_male_ethnicity_options,
+                    video_male_appearance_options,
+                    video_male_outfit_options,
+                ],
+            )
+
+            video_gender_mix.change(
+                update_prompt_option_visibility,
+                inputs=[video_people_count, video_gender_mix],
+                outputs=[
+                    video_ethnicity_options,
+                    video_appearance_options,
+                    video_outfit_options,
+                    video_male_ethnicity_options,
+                    video_male_appearance_options,
+                    video_male_outfit_options,
+                ],
+            )
+
+            style.change(
+                load_video_style_prompt_options,
+                inputs=[style],
+                outputs=[
+                    video_default_prompt,
+                    video_people_count,
+                    video_gender_mix,
+                    video_action,
+                    video_ethnicity_options,
+                    video_appearance_options,
+                    video_outfit_options,
+                    video_male_ethnicity_options,
+                    video_male_appearance_options,
+                    video_male_outfit_options,
+                    video_background_options,
+                    video_pose_options,
+                    video_style_options,
+                    prompt,
+                ],
+            )
+
+            video_random_options.click(
+                random_video_prompt_options,
+                inputs=[
+                    style,
+                    video_people_count,
+                    video_gender_mix,
+                    video_action,
+                    video_default_prompt,
+                ],
+                outputs=[
+                    video_people_count,
+                    video_gender_mix,
+                    video_action,
+                    video_ethnicity_options,
+                    video_appearance_options,
+                    video_outfit_options,
+                    video_male_ethnicity_options,
+                    video_male_appearance_options,
+                    video_male_outfit_options,
+                    video_background_options,
+                    video_pose_options,
+                    video_style_options,
+                    prompt,
+                ],
+            )
+
+            auto_prompt.click(default_auto_prompt, inputs=[style], outputs=[prompt])
+            speed_mode.change(
+                speed_mode_preset,
+                inputs=[speed_mode],
+                outputs=[width, height, duration_seconds, steps, guidance_scale],
+            )
+
+            generate.click(
+                generate_video,
+                inputs=[
+                    prompt,
+                    negative_prompt,
+                    style,
+                    speed_mode,
+                    width,
+                    height,
+                    duration_seconds,
+                    steps,
+                    guidance_scale,
+                    seed,
+                ],
+                outputs=[video, status],
+            )
+
+
+if __name__ == "__main__":
+    print(f"Using local model directory: {MODEL_DIR}")
+    print(
+        f"Performance profile: {PERFORMANCE_PROFILE} "
+        f"(LOW_MEMORY_MODE={LOW_MEMORY_MODE}, IMAGE_MPS_DTYPE={IMAGE_MPS_DTYPE}, "
+        f"MPS_HIGH_WATERMARK={os.environ.get('PYTORCH_MPS_HIGH_WATERMARK_RATIO')}, "
+        f"MPS_LOW_WATERMARK={os.environ.get('PYTORCH_MPS_LOW_WATERMARK_RATIO')})"
+    )
+    print("Open the app at the local URL printed by Gradio below.")
+    demo.launch(server_name="127.0.0.1", server_port=get_server_port())
