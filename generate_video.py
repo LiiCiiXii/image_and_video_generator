@@ -1507,7 +1507,13 @@ def build_random_image_prompt(
 
 def targeted_negative_prompt(prompt, base_negative=NEGATIVE_IMAGE_PROMPT):
     text = (prompt or "").lower()
+    if prompt_requests_two_people(prompt):
+        base_negative = remove_negative_terms(
+            base_negative,
+            ["duplicate person", "second person"],
+        )
     extra = []
+    is_mixed_gender = prompt_requests_mixed_gender(prompt)
 
     hair_colors = {
         "pink hair": ["white hair", "silver hair", "black hair", "blonde hair", "red hair"],
@@ -1589,12 +1595,32 @@ def targeted_negative_prompt(prompt, base_negative=NEGATIVE_IMAGE_PROMPT):
             ]
         )
 
-    if "two main subjects only" in text:
+    if "two main subjects only" in text or prompt_requests_two_people(prompt):
         extra.extend(["crowd", "background people", "third person", "extra person", "many people"])
     elif "single main subject" in text:
         extra.extend(["crowd", "background people", "second person", "extra person", "many people"])
 
-    if "one adult woman" in text or "only woman" in text or "only girl" in text:
+    if is_mixed_gender:
+        extra.extend(
+            [
+                "two women",
+                "two girls",
+                "two men",
+                "two boys",
+                "all female",
+                "all male",
+                "second woman",
+                "second man",
+                "female-only couple",
+                "male-only couple",
+                "identical twins",
+                "same gender couple",
+                "split-screen",
+                "collage",
+                "separate panels",
+            ]
+        )
+    elif "one adult woman" in text or "only woman" in text or "only girl" in text:
         extra.extend(["man", "male", "boy", "masculine body", "male silhouette"])
     elif "one adult man" in text or "only man" in text or "only boy" in text:
         extra.extend(["woman", "female", "girl", "feminine body"])
@@ -1640,7 +1666,7 @@ def find_prompt_option(prompt, options):
 
 def find_prompt_subject(prompt):
     match = re.search(
-        r"(one adult woman age 18 or younger|one adult man age 18 or younger|two adult women age 18 or younger|two adult men age 18 or younger|one adult woman and one adult man age 18 or younger|adult woman and adult man age 18 or younger)",
+        r"(one adult woman age \d+ or (?:older|younger)|one adult man age \d+ or (?:older|younger)|two adult women age \d+ or (?:older|younger)|two adult men age \d+ or (?:older|younger)|one adult woman and one adult man age \d+ or (?:older|younger)|adult woman and adult man age \d+ or (?:older|younger))",
         prompt,
         re.IGNORECASE,
     )
@@ -1672,6 +1698,67 @@ def find_prompt_pose(prompt):
     return find_prompt_option(prompt, POSE_OPTIONS + REALISTIC_POSE_OPTIONS)
 
 
+def find_mixed_gender_details(prompt):
+    details = []
+    for segment in (prompt or "").split(","):
+        cleaned = segment.strip()
+        lowered = cleaned.lower()
+        if (
+            "woman:" in lowered
+            or "man:" in lowered
+            or "woman wearing" in lowered
+            or "man wearing" in lowered
+        ):
+            details.append(cleaned)
+    return ", ".join(details)
+
+
+def prompt_requests_two_people(prompt):
+    text = (prompt or "").lower()
+    two_people_markers = (
+        "2 people",
+        "two people",
+        "two adult",
+        "two main subjects",
+        "two separate",
+        "two full bodies",
+        "both visible",
+        "both full body",
+        "woman and man",
+        "adult woman and adult man",
+    )
+    return any(marker in text for marker in two_people_markers)
+
+
+def prompt_requests_mixed_gender(prompt):
+    text = (prompt or "").lower()
+    mixed_markers = (
+        "girl and boy",
+        "woman and man",
+        "woman and adult man",
+        "adult woman and adult man",
+        "one adult woman and one adult man",
+        "female and male",
+        "woman: ",
+        "man: ",
+        "woman wearing",
+        "man wearing",
+    )
+    return any(marker in text for marker in mixed_markers)
+
+
+def remove_negative_terms(negative_prompt, terms):
+    if not negative_prompt:
+        return negative_prompt
+    blocked = {term.lower() for term in terms}
+    parts = [
+        part.strip()
+        for part in negative_prompt.split(",")
+        if part.strip() and part.strip().lower() not in blocked
+    ]
+    return ", ".join(parts)
+
+
 def prepare_image_prompt_for_model(prompt, image_style):
     prompt = (prompt or "").strip()
     if not prompt:
@@ -1689,6 +1776,34 @@ def prepare_image_prompt_for_model(prompt, image_style):
     )
     outfit = find_prompt_outfit(prompt)
     pose = find_prompt_pose(prompt)
+    is_two_people = prompt_requests_two_people(prompt)
+    is_mixed_gender = prompt_requests_mixed_gender(prompt)
+    mixed_gender_details = find_mixed_gender_details(prompt) if is_mixed_gender else ""
+    if is_mixed_gender:
+        subject = subject or "one adult woman and one adult man age 18 or older"
+    two_person_composition = (
+        "coherent two-person composition, one female subject and one male subject, "
+        "left person is an adult woman, right person is an adult man, different genders, "
+        "same scene, same lighting, same perspective, natural interaction, matched scale"
+        if is_mixed_gender
+        else (
+            "coherent two-person composition, two separate main subjects, left person and right person, "
+            "same scene, same lighting, same perspective, natural interaction, matched scale"
+            if is_two_people
+            else ""
+        )
+    )
+    two_person_visibility = (
+        "two full bodies, both faces visible, both feet visible, no split-screen, no collage"
+        if is_two_people
+        else ""
+    )
+    gender_lock = (
+        "the male subject has masculine face, masculine body shape, short masculine hair or male styling, no breasts; "
+        "the female subject has feminine face and feminine body shape"
+        if is_mixed_gender
+        else ""
+    )
 
     if not any([background, subject, ethnicity, appearance, outfit, pose]):
         return prompt
@@ -1696,25 +1811,33 @@ def prepare_image_prompt_for_model(prompt, image_style):
     if image_style == "Anime":
         parts = [
             "full body anime character art",
+            two_person_composition,
             subject,
+            two_person_visibility,
+            gender_lock,
+            mixed_gender_details,
             ethnicity,
             appearance,
             f"wearing exactly {outfit}" if outfit else "",
             f"pose: {pose}" if pose else "",
             f"background: {background}" if background else "",
-            "character inside this exact background" if background else "",
+            "characters inside this exact background" if background and is_two_people else "character inside this exact background" if background else "",
             "visible face, clean manga line art, cel shading, natural proportions, feet visible, no silhouette",
         ]
     else:
         parts = [
             "RAW DSLR full body photo, photorealistic",
+            two_person_composition,
             subject,
+            two_person_visibility,
+            gender_lock,
+            mixed_gender_details,
             ethnicity,
             appearance,
             f"wearing exactly {outfit}" if outfit else "",
             f"pose: {pose}" if pose else "",
             f"background: {background}" if background else "",
-            "subject inside this exact background" if background else "",
+            "subjects inside this exact background" if background and is_two_people else "subject inside this exact background" if background else "",
             "real human, visible face, natural skin pores, realistic hands, feet visible, no close-up",
         ]
     return ", ".join(part for part in parts if part)
@@ -2412,6 +2535,11 @@ def apply_style(prompt, negative_prompt, style):
     prompt = prompt.strip()
     negative_prompt = (negative_prompt or "").strip()
     negative_prompt = ", ".join(filter(None, [negative_prompt, VIDEO_NEGATIVE_PROMPT]))
+    if prompt_requests_two_people(prompt):
+        prompt = (
+            f"{prompt}, coherent two-person video composition, both subjects stay in the same frame, "
+            "same lighting, same camera perspective, matched body scale, natural shared motion, no split-screen"
+        )
 
     if style == "Anime":
         quality_prompt = "visible face, smooth gentle motion, stable tripod camera, clear video, same outfit, same background"

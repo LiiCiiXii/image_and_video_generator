@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Generated Images</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111316;
+      --panel: #181c20;
+      --panel-2: #20262c;
+      --text: #f4f1ea;
+      --muted: #a9b0b7;
+      --line: #343b43;
+      --accent: #f2b84b;
+      --accent-2: #6fd1c7;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      border-bottom: 1px solid var(--line);
+      background: rgba(17, 19, 22, 0.94);
+      backdrop-filter: blur(18px);
+    }
+
+    .bar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      align-items: center;
+      width: min(1500px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 18px 0;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .meta {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .tools {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    input,
+    select {
+      min-height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      font: inherit;
+      font-size: 14px;
+      padding: 0 12px;
+      outline: none;
+    }
+
+    input {
+      width: min(320px, 42vw);
+    }
+
+    input:focus,
+    select:focus {
+      border-color: var(--accent-2);
+      box-shadow: 0 0 0 3px rgba(111, 209, 199, 0.16);
+    }
+
+    main {
+      width: min(1500px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 22px 0 34px;
+    }
+
+    .gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+      gap: 14px;
+      align-items: start;
+    }
+
+    figure {
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      cursor: pointer;
+      transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
+    }
+
+    figure:hover {
+      transform: translateY(-2px);
+      border-color: rgba(242, 184, 75, 0.72);
+      background: var(--panel-2);
+    }
+
+    figure img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 1 / 1;
+      object-fit: cover;
+      background: #0c0e10;
+    }
+
+    figcaption {
+      padding: 9px 10px 10px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+
+    .empty {
+      display: none;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 24px;
+      color: var(--muted);
+      background: var(--panel);
+      text-align: center;
+    }
+
+    dialog {
+      width: min(980px, calc(100% - 28px));
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 0;
+      background: var(--panel);
+      color: var(--text);
+    }
+
+    dialog::backdrop {
+      background: rgba(0, 0, 0, 0.78);
+    }
+
+    .preview-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+    }
+
+    .preview-name {
+      min-width: 0;
+      color: var(--muted);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+
+    button {
+      flex: 0 0 auto;
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #262d34;
+      color: var(--text);
+      font: inherit;
+      padding: 0 12px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: var(--accent);
+    }
+
+    .preview-img {
+      display: block;
+      width: 100%;
+      max-height: 78vh;
+      object-fit: contain;
+      background: #090a0c;
+    }
+
+    @media (max-width: 720px) {
+      .bar {
+        grid-template-columns: 1fr;
+      }
+
+      .tools {
+        justify-content: stretch;
+      }
+
+      input,
+      select {
+        width: 100%;
+        flex: 1 1 100%;
+      }
+
+      .gallery {
+        grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+        gap: 10px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="bar">
+      <div>
+        <h1>Generated Images</h1>
+        <div class="meta"><span id="visible-count">0</span> images</div>
+      </div>
+      <div class="tools">
+        <input id="search" type="search" placeholder="Search images" autocomplete="off">
+        <select id="sort">
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+          <option value="name">Name</option>
+        </select>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <div id="gallery" class="gallery"></div>
+    <div id="empty" class="empty">No images match this search.</div>
+  </main>
+
+  <dialog id="preview">
+    <div class="preview-top">
+      <div id="preview-name" class="preview-name"></div>
+      <button id="close-preview" type="button">Close</button>
+    </div>
+    <img id="preview-img" class="preview-img" alt="">
+  </dialog>
+
+  <script>
+    const imagePaths = [
+      "generated_images/Luna_1780156196.png",
+      "generated_images/Luna_1780156476.png",
+      "generated_images/Luna_1780156577.png",
+      "generated_images/Luna_1780156580.png",
+      "generated_images/Luna_anime_1780160906.png",
+      "generated_images/Luna_anime_1780161099.png",
+      "generated_images/Luna_anime_1780161114.png",
+      "generated_images/Luna_anime_1780161129.png",
+      "generated_images/Luna_anime_1780161141.png",
+      "generated_images/Luna_anime_1780161231.png",
+      "generated_images/Luna_anime_1780161245.png",
+      "generated_images/Luna_anime_1780161259.png",
+      "generated_images/Luna_anime_1780161369.png",
+      "generated_images/Luna_anime_1780161397.png",
+      "generated_images/Luna_anime_1780161426.png",
+      "generated_images/Luna_anime_1780161454.png",
+      "generated_images/Luna_anime_1780161484.png",
+      "generated_images/Luna_anime_1780161514.png",
+      "generated_images/Luna_anime_1780161540.png",
+      "generated_images/Luna_anime_1780162374.png",
+      "generated_images/Luna_anime_1780162406.png",
+      "generated_images/Luna_anime_1780162449.png",
+      "generated_images/Luna_anime_1780162639.png",
+      "generated_images/Luna_anime_1780162777.png",
+      "generated_images/Luna_anime_1780162810.png",
+      "generated_images/Luna_anime_1780162841.png",
+      "generated_images/Luna_anime_1780163056.png",
+      "generated_images/Luna_anime_1780163161.png",
+      "generated_images/Luna_anime_1780163496.png",
+      "generated_images/Luna_anime_1780163792.png",
+      "generated_images/Luna_anime_1780163849.png",
+      "generated_images/Luna_anime_1780163999.png",
+      "generated_images/Luna_anime_1780164045.png",
+      "generated_images/Luna_anime_1780164089.png",
+      "generated_images/Luna_anime_1780164217.png",
+      "generated_images/Luna_anime_1780164267.png",
+      "generated_images/Luna_anime_1780164701.png",
+      "generated_images/Luna_anime_1780164742.png",
+      "generated_images/Luna_anime_1780164845.png",
+      "generated_images/Luna_anime_1780164889.png",
+      "generated_images/Luna_anime_1780165073.png",
+      "generated_images/Luna_anime_1780165115.png",
+      "generated_images/Luna_anime_1780165170.png",
+      "generated_images/Luna_anime_1780165213.png",
+      "generated_images/Luna_anime_1780165623.png",
+      "generated_images/Luna_anime_1780165659.png",
+      "generated_images/Luna_anime_1780165720.png",
+      "generated_images/Luna_anime_1780165776.png",
+      "generated_images/Luna_anime_1780165904.png",
+      "generated_images/Luna_anime_1780165946.png",
+      "generated_images/Luna_anime_1780165988.png",
+      "generated_images/Luna_anime_1780166280.png",
+      "generated_images/Luna_anime_1780166323.png",
+      "generated_images/Luna_anime_1780166398.png",
+      "generated_images/Luna_anime_1780166431.png",
+      "generated_images/Luna_anime_1780166473.png",
+      "generated_images/Luna_anime_1780166607.png",
+      "generated_images/Luna_anime_1780166774.png",
+      "generated_images/Luna_anime_1780166819.png",
+      "generated_images/Luna_anime_1780167549.png",
+      "generated_images/Luna_anime_1780167591.png",
+      "generated_images/Luna_anime_1780167632.png",
+      "generated_images/Luna_anime_1780167672.png",
+      "generated_images/Luna_anime_1780167723.png",
+      "generated_images/Luna_anime_1780168175.png",
+      "generated_images/Luna_anime_1780168210.png",
+      "generated_images/Luna_anime_1780168248.png",
+      "generated_images/Luna_anime_1780168433.png",
+      "generated_images/Luna_anime_1780168487.png",
+      "generated_images/Luna_anime_1780168530.png",
+      "generated_images/Luna_anime_1780172946.png",
+      "generated_images/Luna_anime_1780172997.png",
+      "generated_images/Luna_anime_1780173077.png",
+      "generated_images/Luna_anime_1780173110.png",
+      "generated_images/Luna_anime_1780173142.png",
+      "generated_images/Luna_anime_1780173179.png",
+      "generated_images/Luna_anime_1780173293.png",
+      "generated_images/Luna_anime_1780173376.png",
+      "generated_images/Luna_anime_1780201369.png",
+      "generated_images/Luna_anime_1780201414.png",
+      "generated_images/Luna_anime_1780201466.png",
+      "generated_images/Luna_anime_1780201758.png",
+      "generated_images/Luna_anime_1780201817.png",
+      "generated_images/Luna_anime_1780201861.png",
+      "generated_images/Luna_anime_1780201909.png",
+      "generated_images/Luna_anime_1780201949.png",
+      "generated_images/Luna_anime_1780203196.png",
+      "generated_images/Luna_anime_1780203253.png",
+      "generated_images/Luna_anime_1780203301.png",
+      "generated_images/Luna_anime_1780203489.png",
+      "generated_images/Luna_anime_1780203542.png",
+      "generated_images/Luna_anime_1780203617.png",
+      "generated_images/Luna_anime_1780203690.png",
+      "generated_images/Luna_anime_1780203739.png",
+      "generated_images/Luna_anime_1780203788.png",
+      "generated_images/Luna_anime_1780204061.png",
+      "generated_images/Luna_anime_1780204190.png",
+      "generated_images/Luna_anime_1780204241.png",
+      "generated_images/Luna_anime_1780204285.png",
+      "generated_images/Luna_anime_1780204609.png",
+      "generated_images/Luna_anime_1780204665.png",
+      "generated_images/Luna_anime_1780204725.png",
+      "generated_images/Luna_anime_1780204912.png",
+      "generated_images/Luna_anime_1780204977.png",
+      "generated_images/Luna_anime_1780205071.png",
+      "generated_images/Luna_anime_1780205380.png",
+      "generated_images/Luna_anime_1780205494.png",
+      "generated_images/Luna_anime_1780205538.png",
+      "generated_images/Luna_anime_1780205593.png",
+      "generated_images/Luna_anime_1780205708.png",
+      "generated_images/Luna_anime_1780205762.png",
+      "generated_images/Luna_anime_1780206719.png",
+      "generated_images/Luna_anime_1780206758.png",
+      "generated_images/Luna_anime_1780206792.png",
+      "generated_images/Luna_anime_1780206840.png",
+      "generated_images/Luna_anime_1780207508.png",
+      "generated_images/Luna_anime_1780207550.png",
+      "generated_images/Luna_anime_1780207588.png",
+      "generated_images/Luna_anime_1780207638.png",
+      "generated_images/Luna_anime_1780207765.png",
+      "generated_images/Luna_anime_1780207857.png",
+      "generated_images/Luna_anime_1780207919.png",
+      "generated_images/Luna_anime_1780208064.png",
+      "generated_images/Luna_anime_1780208124.png",
+      "generated_images/Luna_anime_1780208281.png",
+      "generated_images/Luna_anime_1780208323.png",
+      "generated_images/Luna_anime_1780208363.png",
+      "generated_images/Luna_anime_1780208406.png",
+      "generated_images/Luna_anime_1780208478.png",
+      "generated_images/Luna_anime_1780208518.png",
+      "generated_images/Luna_anime_1780208565.png",
+      "generated_images/Luna_anime_1780208610.png",
+      "generated_images/Luna_anime_1780208653.png",
+      "generated_images/Luna_anime_1780208697.png",
+      "generated_images/Luna_anime_1780208760.png",
+      "generated_images/Luna_anime_1780208821.png",
+      "generated_images/Luna_anime_1780208875.png",
+      "generated_images/Luna_anime_1780208938.png",
+      "generated_images/Luna_anime_1780209057.png",
+      "generated_images/Luna_anime_1780209158.png",
+      "generated_images/Luna_anime_1780209226.png",
+      "generated_images/Luna_anime_1780209268.png",
+      "generated_images/Luna_anime_1780209340.png",
+      "generated_images/Luna_anime_1780209406.png",
+      "generated_images/Luna_anime_1780209501.png",
+      "generated_images/Luna_anime_1780209579.png",
+      "generated_images/Luna_anime_1780209616.png",
+      "generated_images/Luna_anime_1780209685.png",
+      "generated_images/Luna_anime_1780209754.png",
+      "generated_images/Luna_anime_1780209795.png",
+      "generated_images/Luna_anime_1780209835.png",
+      "generated_images/Luna_anime_1780209869.png",
+      "generated_images/Luna_anime_1780209906.png",
+      "generated_images/Luna_anime_1780210057.png",
+      "generated_images/Luna_anime_1780210182.png",
+      "generated_images/Luna_anime_1780210257.png",
+      "generated_images/Luna_anime_1780210308.png",
+      "generated_images/Luna_anime_1780210377.png",
+      "generated_images/Luna_anime_1780210446.png",
+      "generated_images/Luna_anime_1780210484.png",
+      "generated_images/Luna_anime_1780210528.png",
+      "generated_images/Luna_anime_1780210570.png",
+      "generated_images/Luna_anime_1780210640.png",
+      "generated_images/Luna_anime_1780210683.png",
+      "generated_images/Luna_anime_1780211608.png",
+      "generated_images/Luna_anime_1780211668.png",
+      "generated_images/Luna_anime_1780211733.png",
+      "generated_images/Luna_anime_1780211857.png",
+      "generated_images/Luna_anime_1780211903.png",
+      "generated_images/Luna_anime_1780211975.png",
+      "generated_images/Luna_anime_1780212021.png",
+      "generated_images/Luna_anime_1780212076.png",
+      "generated_images/Luna_anime_1780212159.png",
+      "generated_images/Luna_anime_1780212195.png",
+      "generated_images/Luna_anime_1780212383.png",
+      "generated_images/Luna_anime_1780212471.png",
+      "generated_images/Luna_anime_1780212531.png",
+      "generated_images/Luna_anime_1780212567.png",
+      "generated_images/Luna_anime_1780212638.png",
+      "generated_images/Luna_anime_1780212698.png",
+      "generated_images/Luna_anime_1780212769.png",
+      "generated_images/Luna_anime_1780212817.png",
+      "generated_images/Luna_anime_1780212865.png",
+      "generated_images/Luna_anime_1780212904.png",
+      "generated_images/Luna_anime_1780212938.png",
+      "generated_images/Luna_anime_1780212972.png",
+      "generated_images/Luna_anime_1780213019.png",
+      "generated_images/Luna_anime_1780213051.png",
+      "generated_images/Luna_anime_1780213095.png",
+      "generated_images/Luna_anime_1780213153.png",
+      "generated_images/Luna_anime_1780213271.png",
+      "generated_images/Luna_anime_1780213653.png",
+      "generated_images/Luna_anime_1780213692.png",
+      "generated_images/Luna_anime_1780213738.png",
+      "generated_images/Luna_anime_1780213793.png",
+      "generated_images/Luna_anime_1780213931.png",
+      "generated_images/Luna_anime_1780213970.png",
+      "generated_images/Luna_anime_1780214012.png",
+      "generated_images/Luna_anime_1780214058.png",
+      "generated_images/Luna_anime_1780214720.png",
+      "generated_images/Luna_anime_1780214761.png",
+      "generated_images/Luna_anime_1780214844.png",
+      "generated_images/Luna_anime_1780214891.png",
+      "generated_images/Luna_anime_1780214928.png",
+      "generated_images/Luna_anime_1780215038.png",
+      "generated_images/Luna_anime_1780215099.png",
+      "generated_images/Luna_anime_1780215418.png",
+      "generated_images/Luna_anime_1780216322.png",
+      "generated_images/Luna_ltx_1780157083.png",
+      "generated_images/Luna_ltx_1780158059.png",
+      "generated_images/Luna_ltx_1780158378.png",
+      "generated_images/Luna_ltx_1780158480.png",
+    ];
+
+    const gallery = document.querySelector("#gallery");
+    const empty = document.querySelector("#empty");
+    const visibleCount = document.querySelector("#visible-count");
+    const search = document.querySelector("#search");
+    const sort = document.querySelector("#sort");
+    const preview = document.querySelector("#preview");
+    const previewImg = document.querySelector("#preview-img");
+    const previewName = document.querySelector("#preview-name");
+    const closePreview = document.querySelector("#close-preview");
+
+    function getTimestamp(path) {
+      const match = path.match(/_(\d+)\.png$/);
+      return match ? Number(match[1]) : 0;
+    }
+
+    function formatName(path) {
+      return path.split("/").pop();
+    }
+
+    function sortedImages(images) {
+      return [...images].sort((a, b) => {
+        if (sort.value === "oldest") return getTimestamp(a) - getTimestamp(b);
+        if (sort.value === "name") return formatName(a).localeCompare(formatName(b));
+        return getTimestamp(b) - getTimestamp(a);
+      });
+    }
+
+    function openPreview(path) {
+      previewImg.src = path;
+      previewImg.alt = formatName(path);
+      previewName.textContent = formatName(path);
+      preview.showModal();
+    }
+
+    function render() {
+      const query = search.value.trim().toLowerCase();
+      const filtered = sortedImages(imagePaths).filter((path) => {
+        return formatName(path).toLowerCase().includes(query);
+      });
+
+      gallery.replaceChildren();
+      visibleCount.textContent = filtered.length;
+      empty.style.display = filtered.length ? "none" : "block";
+
+      const fragment = document.createDocumentFragment();
+      filtered.forEach((path) => {
+        const figure = document.createElement("figure");
+        const img = document.createElement("img");
+        const caption = document.createElement("figcaption");
+
+        img.src = path;
+        img.alt = formatName(path);
+        img.loading = "lazy";
+        caption.textContent = formatName(path);
+        figure.append(img, caption);
+        figure.addEventListener("click", () => openPreview(path));
+        fragment.append(figure);
+      });
+
+      gallery.append(fragment);
+    }
+
+    search.addEventListener("input", render);
+    sort.addEventListener("change", render);
+    closePreview.addEventListener("click", () => preview.close());
+    preview.addEventListener("click", (event) => {
+      if (event.target === preview) preview.close();
+    });
+
+    render();
+  </script>
+</body>
+</html>
